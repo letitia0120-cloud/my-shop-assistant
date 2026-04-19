@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings } from 'lucide-react';
+import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
 // API Retry Utility
@@ -102,7 +102,7 @@ export default function App() {
 
   const [database, setDatabase] = useState([]);
   const [user, setUser] = useState(null);
-  const [authError, setAuthError] = useState(null); // ✅ 新增：捕捉登入錯誤
+  const [authError, setAuthError] = useState(null);
   const [isSyncing, setIsSyncing] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -110,31 +110,48 @@ export default function App() {
   const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
   const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash');
 
-  // --- Firebase Auth Setup ---
+  // --- Firebase Auth Setup (Google Login) ---
   useEffect(() => {
     if (!auth) {
       setIsSyncing(false);
       return;
     }
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (error) {
-        console.error("Auth error:", error);
-        setAuthError(error.message); // ✅ 儲存真實錯誤訊息
-      }
-    };
-    initAuth();
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser) setAuthError(null);
+      if (currentUser) {
+        setAuthError(null);
+      } else {
+        setDatabase([]); // 登出時清空畫面資料
+      }
     });
     return () => unsubscribe();
   }, []);
+
+  const login = async () => {
+    if (!auth) {
+      alert("請先完成系統設定中的 Firebase 配置！");
+      setActiveTab('settings');
+      return;
+    }
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login error:", error);
+      setAuthError(error.message);
+      alert("登入失敗：" + error.message);
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setAnalyzeError(null);
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+  };
 
   // --- Firebase Data Sync ---
   useEffect(() => {
@@ -143,6 +160,7 @@ export default function App() {
       return;
     }
     setIsSyncing(true);
+    // 使用 user.uid 來建立專屬資料夾，達到雲端同步
     const productsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'products');
     
     const unsubscribe = onSnapshot(productsRef, (snapshot) => {
@@ -305,22 +323,20 @@ export default function App() {
     setFormData(prev => ({ ...prev, variants: prev.variants.filter((_, i) => i !== index) }));
   };
 
-  // ✅ v2.4 升級的儲存功能，精準抓出 Firebase 錯誤
   const saveToDatabase = async () => {
     if (!formData.productName || formData.variants.length === 0) {
       setAnalyzeError("請至少填寫商品名稱與一個款式售價！");
       return;
     }
     
-    // 檢查資料庫連接
     if (!db) {
       setAnalyzeError("Firebase 資料庫未連接。請至「⚙️ 設定」分頁確認設定碼是否正確。");
       return;
     }
 
-    // 檢查登入狀態與顯示真實錯誤
+    // ✅ 改用 Google 登入檢查
     if (!user) {
-      setAnalyzeError(`Firebase 驗證失敗 (無法寫入)。真實錯誤: ${authError || '尚未取得授權，請確認是否已在 Firebase 開啟匿名登入，並將 Vercel 網域加入授權清單。'}`);
+      setAnalyzeError(`請先點擊上方「登入雲端」，登入 Google 帳號後才能存檔喔！`);
       return;
     }
 
@@ -432,20 +448,37 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20 sm:pb-0">
-      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 shadow-md">
+      {/* 🚀 Header：整合 v2.4 的標語與 v3.0 的 Google 登入按鈕 */}
+      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 shadow-md sticky top-0 z-50">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">為自由的房子努力！(v2.4版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.1 完整回歸版)</h1>
           </div>
-          <p className="text-sm text-indigo-100 mt-2 sm:mt-0 font-medium tracking-wide">
-            距離月入 20 萬的夢想，又近了一件商品。不要懶，動起來！
-          </p>
+          
+          <div className="flex items-center gap-3 mt-3 sm:mt-0">
+            {user ? (
+              <div className="flex items-center gap-3 bg-white/10 px-3 py-1.5 rounded-full border border-white/20 shadow-sm">
+                <div className="flex flex-col items-end">
+                  <span className="text-[10px] text-indigo-100 uppercase tracking-wider font-bold">雲端已連線</span>
+                  <span className="text-sm font-bold truncate max-w-[120px]">{user.displayName || '老闆娘'}</span>
+                </div>
+                <div className="w-px h-6 bg-white/20 mx-1"></div>
+                <button onClick={logout} className="p-1.5 hover:bg-white/20 rounded-full transition-colors flex items-center gap-1" title="登出">
+                  <LogOut className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <button onClick={login} className="flex items-center gap-2 bg-yellow-400 hover:bg-yellow-300 text-indigo-900 px-4 py-2 rounded-full font-bold transition-all shadow-md active:scale-95 text-sm">
+                <LogIn className="w-4 h-4" /> 點我登入雲端同步
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto p-4 sm:p-6 mt-4">
-        
+      <div className="max-w-5xl mx-auto p-4 sm:p-6 mt-2">
+        {/* Navigation Tabs */}
         <div className="flex space-x-1 bg-slate-200/50 p-1 rounded-xl mb-6">
           <button
             onClick={() => setActiveTab('upload')}
@@ -479,8 +512,11 @@ export default function App() {
           </button>
         </div>
 
+        {/* --- UPLOAD & AI TAB --- */}
         {activeTab === 'upload' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            
+            {/* Left Column: Image Uploads */}
             <div className="space-y-6">
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
@@ -523,6 +559,7 @@ export default function App() {
               </div>
             </div>
 
+            {/* Right Column: AI Analysis & Form */}
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-lg text-slate-700">AI 資料擷取與定價</h2>
@@ -557,6 +594,7 @@ export default function App() {
                 </div>
               )}
 
+              {/* Form Fields */}
               <div className="space-y-4 flex-1">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1">商品名稱</label>
@@ -689,6 +727,7 @@ export default function App() {
           </div>
         )}
 
+        {/* --- DATABASE TAB --- */}
         {activeTab === 'database' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50/50">
@@ -697,6 +736,7 @@ export default function App() {
                 <p className="text-xs text-slate-500 mt-1">這些是你努力的成果，快把他們上架到賣場吧！</p>
                 {!db && <p className="text-xs font-bold text-red-500 mt-2">⚠️ 尚未連結雲端資料庫，請至「設定」配置 Firebase</p>}
                 {authError && <p className="text-xs font-bold text-red-500 mt-2">⚠️ 登入發生錯誤: {authError}</p>}
+                {!user && !authError && <p className="text-xs font-bold text-amber-600 mt-2">⚠️ 請先點擊右上角登入 Google 帳號，才能讀取雲端資料。</p>}
               </div>
               
               <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -726,7 +766,7 @@ export default function App() {
                 <div className="p-12 text-center flex flex-col items-center">
                   <Database className="w-16 h-16 text-slate-200 mb-4" />
                   <p className="text-slate-500 font-medium">{searchTerm ? '找不到符合關鍵字的商品' : '目前還沒有建檔的商品喔'}</p>
-                  {!searchTerm && (
+                  {!searchTerm && user && (
                     <button 
                       onClick={() => setActiveTab('upload')}
                       className="mt-4 px-6 py-2 bg-indigo-50 text-indigo-600 rounded-lg font-semibold hover:bg-indigo-100 transition-colors"
@@ -823,6 +863,7 @@ export default function App() {
           </div>
         )}
 
+        {/* --- SETTINGS TAB --- */}
         {activeTab === 'settings' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden max-w-2xl mx-auto">
             <div className="p-5 border-b border-slate-100 bg-slate-50/50">
@@ -860,9 +901,9 @@ export default function App() {
                 <p className="text-red-500 font-semibold">⚠️ 必做事項：</p>
                 <ul className="list-disc pl-5">
                   <li>複製系統提供的那段 JSON 設定碼貼在這裡 (只要大括號的部分)。</li>
-                  <li>在 Firebase 後台的 Authentication (驗證) 中，啟用 <strong>Anonymous (匿名)</strong> 登入。</li>
+                  <li>在 Firebase 後台的 Authentication (驗證) 中，開啟 <strong>Google 登入</strong>。</li>
                   <li>在 Firestore Database 中建立資料庫，並選擇 <strong>以測試模式開始 (Test Mode)</strong>。</li>
-                  <li className="font-bold text-indigo-600">在 Authentication 的「設定 -&gt; 授權網域」中，新增你的 Vercel 網址。</li>
+                  <li className="font-bold text-indigo-600">在 Authentication 的「設定 ➜ 授權網域」中，新增你的 Vercel 網址。</li>
                 </ul>
               </div>
             </div>
