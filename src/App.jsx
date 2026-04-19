@@ -5,16 +5,26 @@ import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged }
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
 // API Retry Utility
-const fetchWithRetry = async (url, options, retries = 5) => {
-  const delays = [1000, 2000, 4000, 8000, 16000];
+const fetchWithRetry = async (url, options, retries = 3) => {
+  const delays = [1000, 2000, 4000];
   for (let i = 0; i < retries; i++) {
     try {
       const response = await fetch(url, options);
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        let errText = '';
+        try {
+          const errJson = await response.json();
+          errText = errJson.error?.message || response.statusText;
+        } catch (e) {
+          errText = response.statusText;
+        }
+        const error = new Error(`${response.status} - ${errText}`);
+        error.status = response.status;
+        throw error;
       }
       return await response.json();
     } catch (e) {
+      if (e.status === 400 || e.status === 403 || e.status === 404) throw e;
       if (i === retries - 1) throw e;
       await new Promise(r => setTimeout(r, delays[i]));
     }
@@ -103,6 +113,7 @@ export default function App() {
   // State for Settings Tab
   const [geminiKeyInput, setGeminiKeyInput] = useState(localStorage.getItem('custom_gemini_api_key') || '');
   const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
+  const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash-latest');
 
   // --- Firebase Auth Setup ---
   useEffect(() => {
@@ -198,8 +209,9 @@ export default function App() {
     setAnalyzeSuccess(false);
 
     try {
-      // 安全機制：如果在 Vercel 或有自訂金鑰，強制使用公開版 1.5-flash
-      const modelName = (isCanvasEnv && !customApiKey) ? 'gemini-2.5-flash-preview-09-2025' : 'gemini-1.5-flash';
+      // 安全機制：如果在 Vercel 或有自訂金鑰，強制使用公開版模型
+      const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash-latest';
+      const modelName = (isCanvasEnv && !customApiKey) ? 'gemini-2.5-flash-preview-09-2025' : customModel;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const base64Data = chatImage.split(',')[1];
 
@@ -273,11 +285,7 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      if (err.message.includes('404')) {
-        setAnalyzeError(`AI 分析失敗 (404)。你的網頁還在舊版！請確認畫面最上方有沒有顯示 (v2.1版)。如果沒有，請重新整理網頁！`);
-      } else {
-        setAnalyzeError(`AI 分析失敗 (${err.message})。請確認 API Key 是否正確。`);
-      }
+      setAnalyzeError(`AI 分析失敗 (${err.message})。請檢查 API Key 或模型設定。`);
     } finally {
       setIsAnalyzing(false);
     }
@@ -401,6 +409,7 @@ export default function App() {
   // 儲存設定
   const saveSettings = () => {
     localStorage.setItem('custom_gemini_api_key', geminiKeyInput.trim());
+    localStorage.setItem('custom_gemini_model', modelInput.trim());
     if (firebaseConfigInput.trim()) {
       try {
         JSON.parse(firebaseConfigInput);
@@ -424,7 +433,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">為自由的房子努力！(v2.1版)</h1>
+            <h1 className="text-lg font-bold">為自由的房子努力！(v2.2版)</h1>
           </div>
           <p className="text-sm text-indigo-100 mt-2 sm:mt-0 font-medium tracking-wide">
             距離月入 20 萬的夢想，又近了一件商品。不要懶，動起來！
@@ -857,27 +866,44 @@ export default function App() {
                   placeholder={`{\n  "apiKey": "...",\n  "authDomain": "...",\n  "projectId": "...",\n  "storageBucket": "...",\n  "messagingSenderId": "...",\n  "appId": "..."\n}`}
                 />
                 <div className="text-xs text-slate-500 mt-2 space-y-1">
-                  <p>前往 <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline font-semibold">Firebase</a> 建立專案與 Web 應用程式。</p>
-                  <p className="text-red-500 font-semibold">⚠️ 必做事項：</p>
-                  <ul className="list-disc pl-5">
-                    <li>複製系統提供的那段 JSON 設定碼貼在這裡 (只要大括號的部分)。</li>
-                    <li>在 Firebase 後台的 Authentication (驗證) 中，啟用 <strong>Anonymous (匿名)</strong> 登入。</li>
-                    <li>在 Firestore Database 中建立資料庫，並選擇 <strong>以測試模式開始 (Test Mode)</strong>。</li>
-                  </ul>
-                </div>
+                <p>前往 <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline font-semibold">Firebase</a> 建立專案與 Web 應用程式。</p>
+                <p className="text-red-500 font-semibold">⚠️ 必做事項：</p>
+                <ul className="list-disc pl-5">
+                  <li>複製系統提供的那段 JSON 設定碼貼在這裡 (只要大括號的部分)。</li>
+                  <li>在 Firebase 後台的 Authentication (驗證) 中，啟用 <strong>Anonymous (匿名)</strong> 登入。</li>
+                  <li>在 Firestore Database 中建立資料庫，並選擇 <strong>以測試模式開始 (Test Mode)</strong>。</li>
+                </ul>
               </div>
-
-              {/* Save Button */}
-              <button 
-                onClick={saveSettings}
-                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-md hover:bg-indigo-700 shadow-md transition-colors"
-              >
-                儲存設定並重啟系統
-              </button>
             </div>
+
+            <hr className="border-slate-100" />
+
+            {/* AI Model Settings */}
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-2">3. AI 模型版本 (進階設定)</label>
+              <input 
+                type="text" 
+                value={modelInput} 
+                onChange={(e) => setModelInput(e.target.value)}
+                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
+                placeholder="gemini-1.5-flash-latest"
+              />
+              <p className="text-xs text-slate-500 mt-2">
+                預設為 <strong>gemini-1.5-flash-latest</strong>。如果分析時出現 404 錯誤，可以嘗試改為 <strong>gemini-1.5-pro-latest</strong>。
+              </p>
+            </div>
+
+            {/* Save Button */}
+            <button 
+              onClick={saveSettings}
+              className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-md hover:bg-indigo-700 shadow-md transition-colors"
+            >
+              儲存設定並重啟系統
+            </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
-  );
+  </div>
+);
 }
