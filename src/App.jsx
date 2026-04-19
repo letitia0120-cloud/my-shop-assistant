@@ -36,15 +36,12 @@ let app, auth, db, appId = 'my-shop-assistant';
 
 try {
   let configObj = null;
-  // 檢查是否在 Vercel 或其他本地環境，讀取用戶自訂的設定
   const customConfig = localStorage.getItem('custom_firebase_config');
   
   if (typeof __firebase_config !== 'undefined' && __firebase_config) {
-    // Canvas 環境
     configObj = JSON.parse(__firebase_config);
     appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
   } else if (customConfig) {
-    // Vercel 且用戶有輸入自訂設定
     configObj = JSON.parse(customConfig);
   }
 
@@ -82,9 +79,8 @@ const compressImage = (dataUrl, callback) => {
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('upload'); // 'upload', 'database', 'settings'
+  const [activeTab, setActiveTab] = useState('upload'); 
   
-  // States for Upload Tab
   const [chatImage, setChatImage] = useState(null);
   const [chatMimeType, setChatMimeType] = useState(null);
   const [productImage, setProductImage] = useState(null);
@@ -104,17 +100,15 @@ export default function App() {
     variants: [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }] 
   });
 
-  // State for Database Tab
   const [database, setDatabase] = useState([]);
   const [user, setUser] = useState(null);
+  const [authError, setAuthError] = useState(null); // ✅ 新增：捕捉登入錯誤
   const [isSyncing, setIsSyncing] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
-  // State for Settings Tab
   const [geminiKeyInput, setGeminiKeyInput] = useState(localStorage.getItem('custom_gemini_api_key') || '');
   const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
-  // ✅ 修正：移除 -latest，使用官方標準名稱
-  const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash');
+  const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash');
 
   // --- Firebase Auth Setup ---
   useEffect(() => {
@@ -131,10 +125,14 @@ export default function App() {
         }
       } catch (error) {
         console.error("Auth error:", error);
+        setAuthError(error.message); // ✅ 儲存真實錯誤訊息
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) setAuthError(null);
+    });
     return () => unsubscribe();
   }, []);
 
@@ -163,7 +161,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // Handle Image Upload
   const handleImageUpload = (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -187,14 +184,12 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // Analyze Chat Image using Gemini API
   const analyzeChatImage = async () => {
     if (!chatImage || !chatMimeType) {
       setAnalyzeError("請先上傳廠商對話截圖！");
       return;
     }
 
-    // 檢查是否有 API Key (自訂或由 Canvas 代理)
     const customApiKey = localStorage.getItem('custom_gemini_api_key');
     const isCanvasEnv = typeof __firebase_config !== 'undefined';
     
@@ -210,8 +205,7 @@ export default function App() {
     setAnalyzeSuccess(false);
 
     try {
-      // 安全機制：如果在 Vercel 或有自訂金鑰，強制使用公開版模型
-      const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash';
+      const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash';
       const modelName = (isCanvasEnv && !customApiKey) ? 'gemini-2.5-flash-preview-09-2025' : customModel;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const base64Data = chatImage.split(',')[1];
@@ -311,13 +305,22 @@ export default function App() {
     setFormData(prev => ({ ...prev, variants: prev.variants.filter((_, i) => i !== index) }));
   };
 
+  // ✅ v2.4 升級的儲存功能，精準抓出 Firebase 錯誤
   const saveToDatabase = async () => {
     if (!formData.productName || formData.variants.length === 0) {
       setAnalyzeError("請至少填寫商品名稱與一個款式售價！");
       return;
     }
-    if (!user || !db) {
-      setAnalyzeError("請先至「⚙️ 設定」分頁配置 Firebase 雲端資料庫！");
+    
+    // 檢查資料庫連接
+    if (!db) {
+      setAnalyzeError("Firebase 資料庫未連接。請至「⚙️ 設定」分頁確認設定碼是否正確。");
+      return;
+    }
+
+    // 檢查登入狀態與顯示真實錯誤
+    if (!user) {
+      setAnalyzeError(`Firebase 驗證失敗 (無法寫入)。真實錯誤: ${authError || '尚未取得授權，請確認是否已在 Firebase 開啟匿名登入，並將 Vercel 網域加入授權清單。'}`);
       return;
     }
 
@@ -346,11 +349,12 @@ export default function App() {
         variants: [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }]
       });
       setAnalyzeSuccess(false);
+      setAnalyzeError(null);
       
       setActiveTab('database');
     } catch (error) {
       console.error("Save error:", error);
-      setAnalyzeError(`儲存失敗: ${error.message}。請確認 Firebase 設定與權限。`);
+      setAnalyzeError(`儲存失敗: ${error.message}。請確認 Firestore 是否已設定為測試模式。`);
     }
   };
 
@@ -407,7 +411,6 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  // 儲存設定
   const saveSettings = () => {
     localStorage.setItem('custom_gemini_api_key', geminiKeyInput.trim());
     localStorage.setItem('custom_gemini_model', modelInput.trim());
@@ -429,12 +432,11 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-20 sm:pb-0">
-      {/* Motivation Header */}
       <div className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white p-4 shadow-md">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">為自由的房子努力！(v2.3版)</h1>
+            <h1 className="text-lg font-bold">為自由的房子努力！(v2.4版)</h1>
           </div>
           <p className="text-sm text-indigo-100 mt-2 sm:mt-0 font-medium tracking-wide">
             距離月入 20 萬的夢想，又近了一件商品。不要懶，動起來！
@@ -442,10 +444,8 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="max-w-5xl mx-auto p-4 sm:p-6 mt-4">
         
-        {/* Navigation Tabs */}
         <div className="flex space-x-1 bg-slate-200/50 p-1 rounded-xl mb-6">
           <button
             onClick={() => setActiveTab('upload')}
@@ -479,13 +479,9 @@ export default function App() {
           </button>
         </div>
 
-        {/* --- UPLOAD & AI TAB --- */}
         {activeTab === 'upload' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            
-            {/* Left Column: Image Uploads */}
             <div className="space-y-6">
-              {/* Image 1: Chat Screenshot */}
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
                   <MessageSquare className="w-5 h-5 text-indigo-500" />
@@ -506,7 +502,6 @@ export default function App() {
                 </label>
               </div>
 
-              {/* Image 2: Product Image */}
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
                   <ImageIcon className="w-5 h-5 text-pink-500" />
@@ -528,7 +523,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Right Column: AI Analysis & Form */}
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-lg text-slate-700">AI 資料擷取與定價</h2>
@@ -550,20 +544,19 @@ export default function App() {
               </div>
 
               {analyzeError && (
-                <div className="flex items-center gap-2 text-red-600 bg-red-50 p-3 rounded-lg mb-4 text-sm">
-                  <AlertCircle className="w-4 h-4 shrink-0" />
+                <div className="flex items-center gap-2 text-red-600 bg-red-50 p-3 rounded-lg mb-4 text-sm font-medium border border-red-200">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
                   {analyzeError}
                 </div>
               )}
 
               {analyzeSuccess && (
-                <div className="flex items-center gap-2 text-green-600 bg-green-50 p-3 rounded-lg mb-4 text-sm">
-                  <CheckCircle className="w-4 h-4 shrink-0" />
+                <div className="flex items-center gap-2 text-green-600 bg-green-50 p-3 rounded-lg mb-4 text-sm font-medium">
+                  <CheckCircle className="w-5 h-5 shrink-0" />
                   AI 分析完成！請確認或微調以下數值。
                 </div>
               )}
 
-              {/* Form Fields */}
               <div className="space-y-4 flex-1">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1">商品名稱</label>
@@ -685,7 +678,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Save Button */}
               <button 
                 onClick={saveToDatabase}
                 className="w-full mt-6 py-4 bg-slate-900 text-white rounded-xl font-bold text-lg hover:bg-slate-800 shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-[0.98]"
@@ -697,7 +689,6 @@ export default function App() {
           </div>
         )}
 
-        {/* --- DATABASE TAB --- */}
         {activeTab === 'database' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50/50">
@@ -705,6 +696,7 @@ export default function App() {
                 <h2 className="font-bold text-lg text-slate-700">商品庫 (目前顯示 {filteredDatabase.length} 筆)</h2>
                 <p className="text-xs text-slate-500 mt-1">這些是你努力的成果，快把他們上架到賣場吧！</p>
                 {!db && <p className="text-xs font-bold text-red-500 mt-2">⚠️ 尚未連結雲端資料庫，請至「設定」配置 Firebase</p>}
+                {authError && <p className="text-xs font-bold text-red-500 mt-2">⚠️ 登入發生錯誤: {authError}</p>}
               </div>
               
               <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -831,7 +823,6 @@ export default function App() {
           </div>
         )}
 
-        {/* --- SETTINGS TAB --- */}
         {activeTab === 'settings' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden max-w-2xl mx-auto">
             <div className="p-5 border-b border-slate-100 bg-slate-50/50">
@@ -840,7 +831,6 @@ export default function App() {
             </div>
             
             <div className="p-6 space-y-8">
-              {/* Gemini API Key */}
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">1. AI 引擎鑰匙 (Gemini API Key)</label>
                 <input 
@@ -857,7 +847,6 @@ export default function App() {
 
               <hr className="border-slate-100" />
 
-              {/* Firebase Config */}
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">2. 雲端保險箱設定 (Firebase Config)</label>
                 <textarea 
@@ -873,13 +862,13 @@ export default function App() {
                   <li>複製系統提供的那段 JSON 設定碼貼在這裡 (只要大括號的部分)。</li>
                   <li>在 Firebase 後台的 Authentication (驗證) 中，啟用 <strong>Anonymous (匿名)</strong> 登入。</li>
                   <li>在 Firestore Database 中建立資料庫，並選擇 <strong>以測試模式開始 (Test Mode)</strong>。</li>
+                  <li className="font-bold text-indigo-600">在 Authentication 的「設定 -&gt; 授權網域」中，新增你的 Vercel 網址。</li>
                 </ul>
               </div>
             </div>
 
             <hr className="border-slate-100" />
 
-            {/* AI Model Settings */}
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-2">3. AI 模型版本 (進階設定)</label>
               <input 
@@ -887,14 +876,10 @@ export default function App() {
                 value={modelInput} 
                 onChange={(e) => setModelInput(e.target.value)}
                 className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
-                placeholder="gemini-1.5-flash"
+                placeholder="gemini-2.5-flash"
               />
-              <p className="text-xs text-slate-500 mt-2">
-                預設為 <strong>gemini-1.5-flash</strong>。如果分析時出現 404 錯誤，可以檢查這欄是否輸入了正確的名稱。
-              </p>
             </div>
 
-            {/* Save Button */}
             <button 
               onClick={saveSettings}
               className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-md hover:bg-indigo-700 shadow-md transition-colors"
