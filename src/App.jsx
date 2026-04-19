@@ -198,7 +198,9 @@ export default function App() {
     setAnalyzeSuccess(false);
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+      // 自動判斷環境：如果是 Vercel 部署的正式版，使用公開的 gemini-1.5-flash 模型
+      const modelName = isCanvasEnv ? 'gemini-2.5-flash-preview-09-2025' : 'gemini-1.5-flash';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const base64Data = chatImage.split(',')[1];
 
       const prompt = `這是一張廠商對話截圖，請從中擷取商品上架所需的資訊。
