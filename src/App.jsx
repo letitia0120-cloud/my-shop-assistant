@@ -198,8 +198,8 @@ export default function App() {
     setAnalyzeSuccess(false);
 
     try {
-      // 自動判斷環境：如果是 Vercel 部署的正式版，使用公開的 gemini-1.5-flash 模型
-      const modelName = isCanvasEnv ? 'gemini-2.5-flash-preview-09-2025' : 'gemini-1.5-flash';
+      // 只要有自訂金鑰，就強制使用公開版 gemini-1.5-flash 模型，避免 404 錯誤
+      const modelName = customApiKey ? 'gemini-1.5-flash' : 'gemini-2.5-flash-preview-09-2025';
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const base64Data = chatImage.split(',')[1];
 
