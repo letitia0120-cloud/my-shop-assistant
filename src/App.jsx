@@ -198,8 +198,8 @@ export default function App() {
     setAnalyzeSuccess(false);
 
     try {
-      // 只要有自訂金鑰，就強制使用公開版 gemini-1.5-flash 模型，避免 404 錯誤
-      const modelName = customApiKey ? 'gemini-1.5-flash' : 'gemini-2.5-flash-preview-09-2025';
+      // 安全機制：如果在 Vercel 或有自訂金鑰，強制使用公開版 1.5-flash
+      const modelName = (isCanvasEnv && !customApiKey) ? 'gemini-2.5-flash-preview-09-2025' : 'gemini-1.5-flash';
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const base64Data = chatImage.split(',')[1];
 
@@ -273,7 +273,11 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      setAnalyzeError(`AI 分析失敗 (${err.message})。請確認 API Key 是否正確。`);
+      if (err.message.includes('404')) {
+        setAnalyzeError(`AI 分析失敗 (404)。你的網頁還在舊版！請確認畫面最上方有沒有顯示 (v2.1版)。如果沒有，請重新整理網頁！`);
+      } else {
+        setAnalyzeError(`AI 分析失敗 (${err.message})。請確認 API Key 是否正確。`);
+      }
     } finally {
       setIsAnalyzing(false);
     }
@@ -420,7 +424,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">為自由的房子努力！每天 5 分鐘上架計畫</h1>
+            <h1 className="text-lg font-bold">為自由的房子努力！(v2.1版)</h1>
           </div>
           <p className="text-sm text-indigo-100 mt-2 sm:mt-0 font-medium tracking-wide">
             距離月入 20 萬的夢想，又近了一件商品。不要懶，動起來！
