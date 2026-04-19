@@ -113,7 +113,8 @@ export default function App() {
   // State for Settings Tab
   const [geminiKeyInput, setGeminiKeyInput] = useState(localStorage.getItem('custom_gemini_api_key') || '');
   const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
-  const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash-latest');
+  // ✅ 修正：移除 -latest，使用官方標準名稱
+  const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash');
 
   // --- Firebase Auth Setup ---
   useEffect(() => {
@@ -210,7 +211,7 @@ export default function App() {
 
     try {
       // 安全機制：如果在 Vercel 或有自訂金鑰，強制使用公開版模型
-      const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash-latest';
+      const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-1.5-flash';
       const modelName = (isCanvasEnv && !customApiKey) ? 'gemini-2.5-flash-preview-09-2025' : customModel;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const base64Data = chatImage.split(',')[1];
@@ -433,7 +434,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">為自由的房子努力！(v2.2版)</h1>
+            <h1 className="text-lg font-bold">為自由的房子努力！(v2.3版)</h1>
           </div>
           <p className="text-sm text-indigo-100 mt-2 sm:mt-0 font-medium tracking-wide">
             距離月入 20 萬的夢想，又近了一件商品。不要懶，動起來！
@@ -886,10 +887,10 @@ export default function App() {
                 value={modelInput} 
                 onChange={(e) => setModelInput(e.target.value)}
                 className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
-                placeholder="gemini-1.5-flash-latest"
+                placeholder="gemini-1.5-flash"
               />
               <p className="text-xs text-slate-500 mt-2">
-                預設為 <strong>gemini-1.5-flash-latest</strong>。如果分析時出現 404 錯誤，可以嘗試改為 <strong>gemini-1.5-pro-latest</strong>。
+                預設為 <strong>gemini-1.5-flash</strong>。如果分析時出現 404 錯誤，可以檢查這欄是否輸入了正確的名稱。
               </p>
             </div>
 
