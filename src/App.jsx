@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download } from 'lucide-react';
+import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
@@ -22,23 +22,37 @@ const fetchWithRetry = async (url, options, retries = 5) => {
 };
 
 // --- Firebase Initialization ---
-let app, auth, db, appId;
+let app, auth, db, appId = 'my-shop-assistant';
+
 try {
-  const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-  app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
-  db = getFirestore(app);
-  appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  let configObj = null;
+  // 檢查是否在 Vercel 或其他本地環境，讀取用戶自訂的設定
+  const customConfig = localStorage.getItem('custom_firebase_config');
+  
+  if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+    // Canvas 環境
+    configObj = JSON.parse(__firebase_config);
+    appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  } else if (customConfig) {
+    // Vercel 且用戶有輸入自訂設定
+    configObj = JSON.parse(customConfig);
+  }
+
+  if (configObj) {
+    app = initializeApp(configObj);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
 } catch (e) {
   console.error("Firebase init error:", e);
 }
 
-// 圖片壓縮工具 (確保上傳到雲端不會超出容量限制)
+// 圖片壓縮工具
 const compressImage = (dataUrl, callback) => {
   const img = new window.Image();
   img.onload = () => {
     const canvas = document.createElement('canvas');
-    const MAX_WIDTH = 400; // 縮圖尺寸
+    const MAX_WIDTH = 400; 
     const MAX_HEIGHT = 400;
     let width = img.width;
     let height = img.height;
@@ -52,18 +66,18 @@ const compressImage = (dataUrl, callback) => {
     canvas.height = height;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0, width, height);
-    callback(canvas.toDataURL('image/jpeg', 0.6)); // 壓縮成 JPG
+    callback(canvas.toDataURL('image/jpeg', 0.6)); 
   };
   img.src = dataUrl;
 };
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('upload'); // 'upload' or 'database'
+  const [activeTab, setActiveTab] = useState('upload'); // 'upload', 'database', 'settings'
   
   // States for Upload Tab
-  const [chatImage, setChatImage] = useState(null); // base64
+  const [chatImage, setChatImage] = useState(null);
   const [chatMimeType, setChatMimeType] = useState(null);
-  const [productImage, setProductImage] = useState(null); // base64
+  const [productImage, setProductImage] = useState(null);
   
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
@@ -75,22 +89,27 @@ export default function App() {
     sizes: '',
     cutoffTime: '',
     exchangeRate: 4.9,
-    sellMultiplier: 4.6, // 新增：建議售價乘數 (預設4.6)
+    sellMultiplier: 4.6,
     fullChatText: '',
-    variants: [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }] // 新增：限價+海外
+    variants: [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }] 
   });
 
   // State for Database Tab
   const [database, setDatabase] = useState([]);
   const [user, setUser] = useState(null);
   const [isSyncing, setIsSyncing] = useState(true);
-  
-  // 新增：搜尋關鍵字狀態
   const [searchTerm, setSearchTerm] = useState('');
+
+  // State for Settings Tab
+  const [geminiKeyInput, setGeminiKeyInput] = useState(localStorage.getItem('custom_gemini_api_key') || '');
+  const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
 
   // --- Firebase Auth Setup ---
   useEffect(() => {
-    if (!auth) return;
+    if (!auth) {
+      setIsSyncing(false);
+      return;
+    }
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -114,7 +133,6 @@ export default function App() {
       return;
     }
     setIsSyncing(true);
-    // 連線到你的專屬私密資料庫
     const productsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'products');
     
     const unsubscribe = onSnapshot(productsRef, (snapshot) => {
@@ -122,7 +140,6 @@ export default function App() {
       snapshot.forEach((doc) => {
         items.push({ id: doc.id, ...doc.data() });
       });
-      // 根據儲存時間排序 (最新的在上面)
       items.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
       setDatabase(items);
       setIsSyncing(false);
@@ -150,7 +167,6 @@ export default function App() {
           setAnalyzeSuccess(false);
         }
       } else if (type === 'product') {
-        // 上傳產品圖時自動壓縮，確保跨裝置同步順暢
         compressImage(dataUrl, (compressedUrl) => {
           setProductImage(compressedUrl);
         });
@@ -166,14 +182,23 @@ export default function App() {
       return;
     }
 
+    // 檢查是否有 API Key (自訂或由 Canvas 代理)
+    const customApiKey = localStorage.getItem('custom_gemini_api_key');
+    const isCanvasEnv = typeof __firebase_config !== 'undefined';
+    
+    if (!customApiKey && !isCanvasEnv) {
+      setAnalyzeError("請先至「⚙️ 設定」分頁輸入你的 Gemini API Key！");
+      return;
+    }
+
+    const apiKey = customApiKey || "";
+
     setIsAnalyzing(true);
     setAnalyzeError(null);
     setAnalyzeSuccess(false);
 
     try {
-      const apiKey = ""; // API key is injected by the environment
       const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
       const base64Data = chatImage.split(',')[1];
 
       const prompt = `這是一張廠商對話截圖，請從中擷取商品上架所需的資訊。
@@ -228,7 +253,6 @@ export default function App() {
       });
 
       const extractedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      
       if (!extractedText) throw new Error("AI 未回傳任何資料");
 
       const data = JSON.parse(extractedText);
@@ -239,7 +263,7 @@ export default function App() {
         sizes: data.sizes || '',
         cutoffTime: data.cutoffTime || '',
         exchangeRate: 4.9, 
-        sellMultiplier: 4.6, // 預設用 4.6 算售價
+        sellMultiplier: 4.6, 
         fullChatText: data.fullChatText || '',
         variants: data.variants && data.variants.length > 0 ? data.variants : [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }]
       });
@@ -247,7 +271,7 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      setAnalyzeError("AI 分析失敗，請手動輸入或稍後再試。");
+      setAnalyzeError(`AI 分析失敗 (${err.message})。請確認 API Key 是否正確。`);
     } finally {
       setIsAnalyzing(false);
     }
@@ -277,8 +301,8 @@ export default function App() {
       setAnalyzeError("請至少填寫商品名稱與一個款式售價！");
       return;
     }
-    if (!user) {
-      setAnalyzeError("雲端系統連線中，請稍候...");
+    if (!user || !db) {
+      setAnalyzeError("請先至「⚙️ 設定」分頁配置 Firebase 雲端資料庫！");
       return;
     }
 
@@ -290,11 +314,9 @@ export default function App() {
     };
 
     try {
-      // 儲存到 Firebase 雲端資料庫
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'products', newId);
       await setDoc(docRef, newItem);
       
-      // Reset form
       setChatImage(null);
       setProductImage(null);
       setChatMimeType(null);
@@ -310,16 +332,15 @@ export default function App() {
       });
       setAnalyzeSuccess(false);
       
-      // Switch to database tab to see result
       setActiveTab('database');
     } catch (error) {
       console.error("Save error:", error);
-      setAnalyzeError("儲存至雲端失敗，請重試！");
+      setAnalyzeError(`儲存失敗: ${error.message}。請確認 Firebase 設定與權限。`);
     }
   };
 
   const deleteItem = async (id) => {
-    if (!user) return;
+    if (!user || !db) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'products', id));
     } catch (error) {
@@ -327,7 +348,6 @@ export default function App() {
     }
   };
 
-  // 新增：過濾搜尋結果
   const filteredDatabase = database.filter(item => {
     const searchLower = searchTerm.toLowerCase();
     const productName = item.productName || '';
@@ -335,11 +355,9 @@ export default function App() {
     return productName.toLowerCase().includes(searchLower) || chatText.toLowerCase().includes(searchLower);
   });
 
-  // 新增：匯出成 Excel (CSV)
   const exportToCSV = () => {
     if (database.length === 0) return;
     
-    // 加入 BOM 確保 Excel 打開中文不會亂碼
     const BOM = '\uFEFF';
     let csvContent = BOM + "建檔日期,商品名稱,尺寸,時效,截單時間,成本匯率,建議售價乘數,款式與價格細節,廠商完整對話\n";
 
@@ -353,7 +371,6 @@ export default function App() {
       const multi = item.sellMultiplier || 4.6;
       const text = `"${(item.fullChatText || '').replace(/"/g, '""')}"`;
 
-      // 整理款式文字
       let variantsText = item.variants?.map(v => {
         const costTwd = v.costCny ? Math.ceil(v.costCny * rate) : 0;
         const limitTwd = v.limitCny ? Math.ceil(v.limitCny * multi) : 0;
@@ -373,6 +390,25 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // 儲存設定
+  const saveSettings = () => {
+    localStorage.setItem('custom_gemini_api_key', geminiKeyInput.trim());
+    if (firebaseConfigInput.trim()) {
+      try {
+        JSON.parse(firebaseConfigInput);
+        localStorage.setItem('custom_firebase_config', firebaseConfigInput.trim());
+      } catch (e) {
+        alert("Firebase 設定格式錯誤，請確認貼上的是 JSON 格式，例如 { \"apiKey\": \"...\" }");
+        return;
+      }
+    } else {
+      localStorage.removeItem('custom_firebase_config');
+    }
+    
+    alert("設定已儲存！系統即將重新載入以套用設定。");
+    window.location.reload();
   };
 
   return (
@@ -397,21 +433,33 @@ export default function App() {
         <div className="flex space-x-1 bg-slate-200/50 p-1 rounded-xl mb-6">
           <button
             onClick={() => setActiveTab('upload')}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
               activeTab === 'upload' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
             }`}
           >
-            <PlusCircle className="w-5 h-5" />
-            新增上架 (AI 分析)
+            <PlusCircle className="w-4 h-4 sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">新增上架 (AI 分析)</span>
+            <span className="sm:hidden">新增</span>
           </button>
           <button
             onClick={() => setActiveTab('database')}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
               activeTab === 'database' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
             }`}
           >
-            {isSyncing ? <RefreshCw className="w-5 h-5 animate-spin text-slate-400" /> : <Cloud className="w-5 h-5 text-indigo-500" />}
-            雲端商品庫 ({database.length})
+            {isSyncing ? <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5 animate-spin text-slate-400" /> : <Cloud className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-500" />}
+            <span className="hidden sm:inline">雲端商品庫 ({database.length})</span>
+            <span className="sm:hidden">商品庫</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+              activeTab === 'settings' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">系統設定</span>
+            <span className="sm:hidden">設定</span>
           </button>
         </div>
 
@@ -640,10 +688,10 @@ export default function App() {
               <div>
                 <h2 className="font-bold text-lg text-slate-700">商品庫 (目前顯示 {filteredDatabase.length} 筆)</h2>
                 <p className="text-xs text-slate-500 mt-1">這些是你努力的成果，快把他們上架到賣場吧！</p>
+                {!db && <p className="text-xs font-bold text-red-500 mt-2">⚠️ 尚未連結雲端資料庫，請至「設定」配置 Firebase</p>}
               </div>
               
               <div className="flex items-center gap-3 w-full sm:w-auto">
-                {/* 搜尋列 */}
                 <div className="relative flex-1 sm:w-64">
                   <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                   <input 
@@ -654,7 +702,6 @@ export default function App() {
                     className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                   />
                 </div>
-                {/* 匯出備份按鈕 */}
                 <button 
                   onClick={exportToCSV}
                   className="flex items-center gap-2 px-3 py-2 bg-green-50 text-green-600 hover:bg-green-100 hover:text-green-700 rounded-lg text-sm font-bold transition-colors whitespace-nowrap"
@@ -764,6 +811,63 @@ export default function App() {
                   </tbody>
                 </table>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* --- SETTINGS TAB --- */}
+        {activeTab === 'settings' && (
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden max-w-2xl mx-auto">
+            <div className="p-5 border-b border-slate-100 bg-slate-50/50">
+              <h2 className="font-bold text-lg text-slate-700 flex items-center gap-2"><Settings className="w-5 h-5 text-slate-500"/> 系統引擎設定</h2>
+              <p className="text-xs text-slate-500 mt-1">在這裡輸入你的專屬金鑰，讓小幫手擁有大腦和雲端保險箱。這段設定只會存在你的瀏覽器中，非常安全。</p>
+            </div>
+            
+            <div className="p-6 space-y-8">
+              {/* Gemini API Key */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">1. AI 引擎鑰匙 (Gemini API Key)</label>
+                <input 
+                  type="password" 
+                  value={geminiKeyInput} 
+                  onChange={(e) => setGeminiKeyInput(e.target.value)}
+                  className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
+                  placeholder="AIzaSy..."
+                />
+                <p className="text-xs text-slate-500 mt-2">
+                  前往 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline font-semibold">Google AI Studio</a> 建立免費的 API Key 並貼在這裡。
+                </p>
+              </div>
+
+              <hr className="border-slate-100" />
+
+              {/* Firebase Config */}
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">2. 雲端保險箱設定 (Firebase Config)</label>
+                <textarea 
+                  value={firebaseConfigInput} 
+                  onChange={(e) => setFirebaseConfigInput(e.target.value)}
+                  className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-xs h-40"
+                  placeholder={`{\n  "apiKey": "...",\n  "authDomain": "...",\n  "projectId": "...",\n  "storageBucket": "...",\n  "messagingSenderId": "...",\n  "appId": "..."\n}`}
+                />
+                <div className="text-xs text-slate-500 mt-2 space-y-1">
+                  <p>前往 <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline font-semibold">Firebase</a> 建立專案與 Web 應用程式。</p>
+                  <p className="text-red-500 font-semibold">⚠️ 必做事項：</p>
+                  <ul className="list-disc pl-5">
+                    <li>複製系統提供的那段 JSON 設定碼貼在這裡 (只要大括號的部分)。</li>
+                    <li>在 Firebase 後台的 Authentication (驗證) 中，啟用 <strong>Anonymous (匿名)</strong> 登入。</li>
+                    <li>在 Firestore Database 中建立資料庫，並選擇 <strong>以測試模式開始 (Test Mode)</strong>。</li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Save Button */}
+              <button 
+                onClick={saveSettings}
+                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-md hover:bg-indigo-700 shadow-md transition-colors"
+              >
+                儲存設定並重啟系統
+              </button>
             </div>
           </div>
         )}
