@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut, Timer } from 'lucide-react';
+import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
-// API Retry Utility - 加入 429 提早阻斷機制
-const fetchWithRetry = async (url, options, retries = 3) => {
-  const delays = [1000, 2000, 4000];
+// API Retry Utility - v3.3 升級：隱形自動重試機制 (完美吸收 429 與 503 錯誤)
+const fetchWithRetry = async (url, options, retries = 5) => {
+  // 預設的指數退避等待時間：1s, 2s, 4s, 8s, 16s
+  const delays = [1000, 2000, 4000, 8000, 16000];
+  
   for (let i = 0; i < retries; i++) {
     try {
       const response = await fetch(url, options);
@@ -24,10 +26,24 @@ const fetchWithRetry = async (url, options, retries = 3) => {
       }
       return await response.json();
     } catch (e) {
-      // 遇到 429 (限速) 或其他嚴重錯誤，不要重試，直接拋出讓計時器接手
-      if (e.status === 400 || e.status === 403 || e.status === 404 || e.status === 429) throw e;
+      // 遇到 400(參數錯), 403(沒權限), 404(找不到) 代表真的錯了，直接拋出不重試
+      if (e.status === 400 || e.status === 403 || e.status === 404) throw e;
+      
+      // 如果已經是最後一次重試，就放棄並把錯誤丟給畫面顯示
       if (i === retries - 1) throw e;
-      await new Promise(r => setTimeout(r, delays[i]));
+
+      // 如果是 429 限速，嘗試從錯誤訊息中抓取 Google 要求的等待秒數
+      let waitTime = delays[i];
+      if (e.status === 429 && e.message) {
+        const match = e.message.match(/retry in (\d+(\.\d+)?)s/);
+        if (match) {
+          // 如果 Google 說要等 8.2 秒，我們就乖乖等 8.2秒 + 0.5秒緩衝
+          waitTime = Math.ceil(parseFloat(match[1])) * 1000 + 500; 
+        }
+      }
+      
+      // 在背景靜靜等待，不打擾使用者
+      await new Promise(r => setTimeout(r, waitTime));
     }
   }
 };
@@ -89,7 +105,6 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
-  const [cooldown, setCooldown] = useState(0); // ⏳ 新增：冷卻計時器狀態
   
   const [formData, setFormData] = useState({
     productName: '',
@@ -111,14 +126,6 @@ export default function App() {
   const [geminiKeyInput, setGeminiKeyInput] = useState(localStorage.getItem('custom_gemini_api_key') || '');
   const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
   const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash');
-
-  // --- 冷卻計時器邏輯 ---
-  useEffect(() => {
-    if (cooldown > 0) {
-      const timer = setTimeout(() => setCooldown(cooldown - 1), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [cooldown]);
 
   // --- Firebase Auth Setup (Google Login) ---
   useEffect(() => {
@@ -213,8 +220,6 @@ export default function App() {
   };
 
   const analyzeChatImage = async () => {
-    if (cooldown > 0) return; // 如果還在冷卻中，阻擋執行
-    
     if (!chatImage || !chatMimeType) {
       setAnalyzeError("請先上傳廠商對話截圖！");
       return;
@@ -310,16 +315,8 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      // 處理 429 錯誤，啟動冷卻計時器
-      if (err.message.includes('429')) {
-        // 嘗試從錯誤訊息抓取等待秒數，抓不到預設為 60 秒
-        const match = err.message.match(/retry in (\d+(\.\d+)?)s/);
-        const waitTime = match ? Math.ceil(parseFloat(match[1])) : 60;
-        setCooldown(waitTime);
-        setAnalyzeError(`⏱️ Google AI 免費版有「每分鐘限速保護」。為保護系統，請等待 ${waitTime} 秒後再試。如不想等待，可至 Google AI Studio 綁定信用卡升級。`);
-      } else {
-        setAnalyzeError(`AI 分析失敗 (${err.message})。請檢查 API Key 狀態。`);
-      }
+      // 如果經過 5 次重試都失敗，才會顯示錯誤
+      setAnalyzeError(`AI 伺服器目前極度繁忙，連續重試失敗 (${err.message})。請稍後再試。`);
     } finally {
       setIsAnalyzing(false);
     }
@@ -472,7 +469,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.2 測速防護版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.3 隱形自動通關版)</h1>
           </div>
           
           <div className="flex items-center gap-3 mt-3 sm:mt-0">
@@ -580,17 +577,14 @@ export default function App() {
                 <h2 className="font-bold text-lg text-slate-700">AI 資料擷取與定價</h2>
                 <button 
                   onClick={analyzeChatImage}
-                  disabled={!chatImage || isAnalyzing || cooldown > 0}
+                  disabled={!chatImage || isAnalyzing}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
                     !chatImage ? 'bg-slate-100 text-slate-400 cursor-not-allowed' :
-                    cooldown > 0 ? 'bg-orange-100 text-orange-600 cursor-not-allowed shadow-inner border border-orange-200' :
                     isAnalyzing ? 'bg-indigo-100 text-indigo-500 cursor-wait' :
                     'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg active:scale-95'
                   }`}
                 >
-                  {cooldown > 0 ? (
-                    <><Timer className="w-4 h-4 animate-pulse" /> ⏳ 冷卻中... 請等 {cooldown} 秒</>
-                  ) : isAnalyzing ? (
+                  {isAnalyzing ? (
                     <><RefreshCw className="w-4 h-4 animate-spin" /> 分析中...</>
                   ) : (
                     <>🚀 開始 AI 分析</>
