@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut, Timer } from 'lucide-react';
+import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut, Timer, Type } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
@@ -101,6 +101,7 @@ const compressImage = (dataUrl, callback) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('upload'); 
   
+  const [pasteText, setPasteText] = useState(''); // 新增：純文字輸入狀態
   const [chatImage, setChatImage] = useState(null);
   const [chatMimeType, setChatMimeType] = useState(null);
   const [productImage, setProductImage] = useState(null);
@@ -108,7 +109,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
-  const [retryCount, setRetryCount] = useState(0); // 紀錄自動重試次數
+  const [retryCount, setRetryCount] = useState(0); 
   
   const [formData, setFormData] = useState({
     productName: '',
@@ -212,7 +213,7 @@ export default function App() {
           setChatMimeType(match[1]);
           setChatImage(dataUrl);
           setAnalyzeSuccess(false);
-          setAnalyzeError(null); // 上傳新圖片時清除錯誤
+          setAnalyzeError(null); 
         }
       } else if (type === 'product') {
         compressImage(dataUrl, (compressedUrl) => {
@@ -223,9 +224,9 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  const analyzeChatImage = async () => {
-    if (!chatImage || !chatMimeType) {
-      setAnalyzeError("請先上傳廠商對話截圖！");
+  const analyzeData = async () => {
+    if (!chatImage && !pasteText.trim()) {
+      setAnalyzeError("請貼上廠商文字，或上傳廠商對話截圖！");
       return;
     }
 
@@ -242,32 +243,38 @@ export default function App() {
     setIsAnalyzing(true);
     setAnalyzeError(null);
     setAnalyzeSuccess(false);
-    setRetryCount(0); // 重置重試次數
+    setRetryCount(0); 
 
     try {
       const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash';
       const modelName = (isCanvasEnv && !customApiKey) ? 'gemini-2.5-flash-preview-09-2025' : customModel;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const base64Data = chatImage.split(',')[1];
-
-      const prompt = `這是一張廠商對話截圖，請從中擷取商品上架所需的資訊。
+      
+      const prompt = `這是一段廠商發佈的商品資訊（可能是文字、圖片截圖，或兩者皆有），請從中擷取商品上架所需的資訊。
       請盡可能找出：
-      1. 建檔時效 (對話時間)：請嚴格格式化為「月/日-小時」，例如截圖中的手機時間08:14，今天是4/19，請寫成 "4/19-08"。
+      1. 建檔時效 (對話時間)：請格式化為「月/日-小時」，例如截圖中的手機時間08:14，今天是4/19，請寫成 "4/19-08"。若無明確時間可留空或依文字推斷。
       2. 提到的商品名稱：請簡短扼要（例如 "Minecraft 新款童裝"），**絕對不要**包含具體的款式名稱（請把「半袖」、「褲子」從主名稱中去掉）。
       3. 尺寸範圍 (例如 "80-140")
       4. 截單時間 (例如 "截單後一個多月出")
-      5. 款式與價格清單 (variants)：請列出所有提到的款式群組，以及對應的拿貨價(costCny)、限價(limitCny)與限價+海外(limitOverseasCny)。例如截圖寫「限價48¥/58¥」，則 limitCny=48，limitOverseasCny=58。若只提供一個限價數字，limitOverseasCny 預設為該限價+10。請分開不同價位的群組。
-      6. 完整廠商對話原文：請將截圖中廠商發送的文字對話內容，完整、一字不漏地轉錄。
+      5. 款式與價格清單 (variants)：請列出所有提到的款式群組，以及對應的拿貨價(costCny)、限價(limitCny)與限價+海外(limitOverseasCny)。例如寫「限價48¥/58¥」，則 limitCny=48，limitOverseasCny=58。若只提供一個限價數字，limitOverseasCny 預設為該限價+10。請分開不同價位的群組。
+      6. 完整廠商對話原文：請將截圖中或我提供的文字內容，完整、一字不漏地轉錄。
       如果找不到特定資訊，請留空或回傳 null。`;
 
+      const parts = [{ text: prompt }];
+
+      // 如果有貼上文字，加入到 payload 中
+      if (pasteText.trim()) {
+        parts[0].text += `\n\n【廠商提供的文字內容如下】：\n${pasteText}`;
+      }
+
+      // 如果有上傳截圖，加入到 payload 中
+      if (chatImage && chatMimeType) {
+        const base64Data = chatImage.split(',')[1];
+        parts.push({ inlineData: { mimeType: chatMimeType, data: base64Data } });
+      }
+
       const payload = {
-        contents: [{
-          role: "user",
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: chatMimeType, data: base64Data } }
-          ]
-        }],
+        contents: [{ role: "user", parts: parts }],
         generationConfig: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -295,7 +302,6 @@ export default function App() {
         }
       };
 
-      // 加入 onRetry 回呼函式，讓畫面知道現在撞了幾次門
       const result = await fetchWithRetry(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -323,11 +329,10 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      // 如果經過 8 次重試都失敗，才會顯示錯誤
       setAnalyzeError(`AI 伺服器目前極度繁忙，小幫手撞門 ${retryCount} 次後依然失敗。請稍後再試。 (${err.message})`);
     } finally {
       setIsAnalyzing(false);
-      setRetryCount(0); // 分析結束（不論成功失敗）都歸零
+      setRetryCount(0); 
     }
   };
 
@@ -377,7 +382,9 @@ export default function App() {
       const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'products', newId);
       await setDoc(docRef, newItem);
       
+      // 存檔成功後清空所有輸入框
       setChatImage(null);
+      setPasteText(''); // 清空貼上的文字
       setProductImage(null);
       setChatMimeType(null);
       setFormData({
@@ -478,7 +485,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.4 終極無敵闖關版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.5 純文字秒殺版)</h1>
           </div>
           
           <div className="flex items-center gap-3 mt-3 sm:mt-0">
@@ -540,20 +547,41 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             
             <div className="space-y-6">
+              {/* --- 新的 步驟一 區塊 (文字貼上 + 截圖上傳) --- */}
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
-                  <MessageSquare className="w-5 h-5 text-indigo-500" />
-                  <h2 className="font-bold text-lg text-slate-700">第一張：廠商對話截圖</h2>
+                  <Type className="w-5 h-5 text-indigo-500" />
+                  <h2 className="font-bold text-lg text-slate-700">第一步：商品資訊 (文字/截圖雙支援)</h2>
                 </div>
-                <p className="text-xs text-slate-500 mb-4">包含對話時間(建檔時效)、成本、限價等資訊。</p>
+                <p className="text-xs text-slate-500 mb-4">直接貼上廠商文字（✨速度最快、不塞車），或上傳對話截圖。</p>
                 
-                <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-indigo-200 border-dashed rounded-xl cursor-pointer bg-indigo-50 hover:bg-indigo-100 transition-colors relative overflow-hidden">
+                {/* 文字貼上區 */}
+                <div className="mb-4">
+                  <label className="block text-xs font-bold text-indigo-600 mb-1 flex items-center gap-1">
+                    ⚡ 快速貼上文字分析區
+                  </label>
+                  <textarea
+                    value={pasteText}
+                    onChange={(e) => setPasteText(e.target.value)}
+                    className="w-full px-3 py-2 border border-indigo-100 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm text-slate-700 h-24 bg-indigo-50/30 placeholder-slate-400 transition-all"
+                    placeholder="請直接複製廠商群組的文字對話，貼在這裡..."
+                  />
+                </div>
+
+                <div className="relative flex items-center py-2">
+                  <div className="flex-grow border-t border-slate-100"></div>
+                  <span className="flex-shrink-0 mx-4 text-slate-400 text-xs font-medium">或上傳對話截圖</span>
+                  <div className="flex-grow border-t border-slate-100"></div>
+                </div>
+
+                {/* 圖片上傳區 */}
+                <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-indigo-100 border-dashed rounded-xl cursor-pointer hover:bg-indigo-50 transition-colors relative overflow-hidden mt-2">
                   {chatImage ? (
                     <img src={chatImage} alt="Chat preview" className="absolute inset-0 w-full h-full object-contain bg-black/5" />
                   ) : (
-                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                      <Upload className="w-8 h-8 text-indigo-400 mb-2" />
-                      <p className="text-sm text-indigo-600 font-medium">點擊或拖曳上傳對話截圖</p>
+                    <div className="flex flex-col items-center justify-center pt-3 pb-4">
+                      <Upload className="w-6 h-6 text-indigo-300 mb-1" />
+                      <p className="text-xs text-indigo-500 font-medium">點擊或拖曳上傳截圖</p>
                     </div>
                   )}
                   <input type="file" accept="image/*" className="hidden" onChange={(e) => handleImageUpload(e, 'chat')} />
@@ -563,7 +591,7 @@ export default function App() {
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
                   <ImageIcon className="w-5 h-5 text-pink-500" />
-                  <h2 className="font-bold text-lg text-slate-700">第二張：產品圖片</h2>
+                  <h2 className="font-bold text-lg text-slate-700">第二步：產品圖片</h2>
                 </div>
                 <p className="text-xs text-slate-500 mb-4">這是用來展示給客人看，以及顯示在後台的縮圖。</p>
                 
@@ -585,10 +613,10 @@ export default function App() {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-bold text-lg text-slate-700">AI 資料擷取與定價</h2>
                 <button 
-                  onClick={analyzeChatImage}
-                  disabled={!chatImage || isAnalyzing}
+                  onClick={analyzeData}
+                  disabled={(!chatImage && !pasteText.trim()) || isAnalyzing}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                    !chatImage ? 'bg-slate-100 text-slate-400 cursor-not-allowed' :
+                    (!chatImage && !pasteText.trim()) ? 'bg-slate-100 text-slate-400 cursor-not-allowed' :
                     isAnalyzing ? 'bg-indigo-100 text-indigo-500 cursor-wait' :
                     'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg active:scale-95'
                   }`}
