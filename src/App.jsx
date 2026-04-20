@@ -1,13 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut } from 'lucide-react';
+import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut, Timer } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
-// API Retry Utility - v3.3 升級：隱形自動重試機制 (完美吸收 429 與 503 錯誤)
-const fetchWithRetry = async (url, options, retries = 5) => {
-  // 預設的指數退避等待時間：1s, 2s, 4s, 8s, 16s
-  const delays = [1000, 2000, 4000, 8000, 16000];
+// API Retry Utility - v3.4 終極升級：超長排隊與進度回報
+const fetchWithRetry = async (url, options, retries = 8, onRetry) => {
+  // 延長排隊時間，最多等超過兩分鐘：2s, 4s, 8s, 15s, 20s, 30s, 30s, 30s
+  const delays = [2000, 4000, 8000, 15000, 20000, 30000, 30000, 30000];
   
   for (let i = 0; i < retries; i++) {
     try {
@@ -42,7 +42,10 @@ const fetchWithRetry = async (url, options, retries = 5) => {
         }
       }
       
-      // 在背景靜靜等待，不打擾使用者
+      // 通知畫面正在進行第幾次重試
+      if (onRetry) onRetry(i + 1);
+      
+      // 在背景靜靜等待
       await new Promise(r => setTimeout(r, waitTime));
     }
   }
@@ -105,6 +108,7 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
+  const [retryCount, setRetryCount] = useState(0); // 紀錄自動重試次數
   
   const [formData, setFormData] = useState({
     productName: '',
@@ -238,6 +242,7 @@ export default function App() {
     setIsAnalyzing(true);
     setAnalyzeError(null);
     setAnalyzeSuccess(false);
+    setRetryCount(0); // 重置重試次數
 
     try {
       const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash';
@@ -290,10 +295,13 @@ export default function App() {
         }
       };
 
+      // 加入 onRetry 回呼函式，讓畫面知道現在撞了幾次門
       const result = await fetchWithRetry(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
+      }, 8, (attempt) => {
+        setRetryCount(attempt);
       });
 
       const extractedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -315,10 +323,11 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      // 如果經過 5 次重試都失敗，才會顯示錯誤
-      setAnalyzeError(`AI 伺服器目前極度繁忙，連續重試失敗 (${err.message})。請稍後再試。`);
+      // 如果經過 8 次重試都失敗，才會顯示錯誤
+      setAnalyzeError(`AI 伺服器目前極度繁忙，小幫手撞門 ${retryCount} 次後依然失敗。請稍後再試。 (${err.message})`);
     } finally {
       setIsAnalyzing(false);
+      setRetryCount(0); // 分析結束（不論成功失敗）都歸零
     }
   };
 
@@ -469,7 +478,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.3 隱形自動通關版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.4 終極無敵闖關版)</h1>
           </div>
           
           <div className="flex items-center gap-3 mt-3 sm:mt-0">
@@ -585,7 +594,11 @@ export default function App() {
                   }`}
                 >
                   {isAnalyzing ? (
-                    <><RefreshCw className="w-4 h-4 animate-spin" /> 分析中...</>
+                    retryCount > 0 ? (
+                      <><RefreshCw className="w-4 h-4 animate-spin" /> 伺服器塞車，自動闖關中 ({retryCount}/8)...</>
+                    ) : (
+                      <><RefreshCw className="w-4 h-4 animate-spin" /> 分析中...</>
+                    )
                   ) : (
                     <>🚀 開始 AI 分析</>
                   )}
