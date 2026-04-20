@@ -4,10 +4,10 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
-// API Retry Utility - v3.4 終極升級：超長排隊與進度回報
-const fetchWithRetry = async (url, options, retries = 8, onRetry) => {
-  // 延長排隊時間，最多等超過兩分鐘：2s, 4s, 8s, 15s, 20s, 30s, 30s, 30s
-  const delays = [2000, 4000, 8000, 15000, 20000, 30000, 30000, 30000];
+// API Retry Utility - v3.6 升級：透明排隊倒數機制，不再讓畫面假死
+const fetchWithRetry = async (url, options, retries = 5, onRetry, onCountdown) => {
+  // 稍微縮短排隊等待時間，避免等太久讓使用者覺得卡住
+  const delays = [2000, 4000, 8000, 10000, 15000];
   
   for (let i = 0; i < retries; i++) {
     try {
@@ -32,12 +32,11 @@ const fetchWithRetry = async (url, options, retries = 8, onRetry) => {
       // 如果已經是最後一次重試，就放棄並把錯誤丟給畫面顯示
       if (i === retries - 1) throw e;
 
-      // 如果是 429 限速，嘗試從錯誤訊息中抓取 Google 要求的等待秒數
+      // 決定要等多久
       let waitTime = delays[i];
       if (e.status === 429 && e.message) {
         const match = e.message.match(/retry in (\d+(\.\d+)?)s/);
         if (match) {
-          // 如果 Google 說要等 8.2 秒，我們就乖乖等 8.2秒 + 0.5秒緩衝
           waitTime = Math.ceil(parseFloat(match[1])) * 1000 + 500; 
         }
       }
@@ -45,8 +44,13 @@ const fetchWithRetry = async (url, options, retries = 8, onRetry) => {
       // 通知畫面正在進行第幾次重試
       if (onRetry) onRetry(i + 1);
       
-      // 在背景靜靜等待
-      await new Promise(r => setTimeout(r, waitTime));
+      // 倒數計時等待迴圈 (每秒更新一次畫面)
+      const waitSeconds = Math.ceil(waitTime / 1000);
+      for (let s = waitSeconds; s > 0; s--) {
+        if (onCountdown) onCountdown(s);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      if (onCountdown) onCountdown(0);
     }
   }
 };
@@ -101,7 +105,7 @@ const compressImage = (dataUrl, callback) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('upload'); 
   
-  const [pasteText, setPasteText] = useState(''); // 新增：純文字輸入狀態
+  const [pasteText, setPasteText] = useState(''); // 純文字輸入狀態
   const [chatImage, setChatImage] = useState(null);
   const [chatMimeType, setChatMimeType] = useState(null);
   const [productImage, setProductImage] = useState(null);
@@ -109,7 +113,9 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
+  
   const [retryCount, setRetryCount] = useState(0); 
+  const [retryCountdown, setRetryCountdown] = useState(0); // 顯示等待秒數
   
   const [formData, setFormData] = useState({
     productName: '',
@@ -244,6 +250,7 @@ export default function App() {
     setAnalyzeError(null);
     setAnalyzeSuccess(false);
     setRetryCount(0); 
+    setRetryCountdown(0);
 
     try {
       const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash';
@@ -306,9 +313,10 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
-      }, 8, (attempt) => {
-        setRetryCount(attempt);
-      });
+      }, 5, 
+      (attempt) => { setRetryCount(attempt); },
+      (seconds) => { setRetryCountdown(seconds); }
+      );
 
       const extractedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!extractedText) throw new Error("AI 未回傳任何資料");
@@ -329,10 +337,11 @@ export default function App() {
       setAnalyzeSuccess(true);
     } catch (err) {
       console.error(err);
-      setAnalyzeError(`AI 伺服器目前極度繁忙，小幫手撞門 ${retryCount} 次後依然失敗。請稍後再試。 (${err.message})`);
+      setAnalyzeError(`AI 伺服器目前極度繁忙，連續嘗試失敗。請稍後再試或考慮綁定信用卡升級。 (${err.message})`);
     } finally {
       setIsAnalyzing(false);
       setRetryCount(0); 
+      setRetryCountdown(0);
     }
   };
 
@@ -485,7 +494,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.5 純文字秒殺版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.6 透明排隊優化版)</h1>
           </div>
           
           <div className="flex items-center gap-3 mt-3 sm:mt-0">
@@ -547,13 +556,15 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             
             <div className="space-y-6">
-              {/* --- 新的 步驟一 區塊 (文字貼上 + 截圖上傳) --- */}
+              {/* --- 步驟一 區塊 (文字貼上 + 截圖上傳) --- */}
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
                   <Type className="w-5 h-5 text-indigo-500" />
-                  <h2 className="font-bold text-lg text-slate-700">第一步：商品資訊 (文字/截圖雙支援)</h2>
+                  <h2 className="font-bold text-lg text-slate-700">第一步：商品資訊</h2>
                 </div>
-                <p className="text-xs text-slate-500 mb-4">直接貼上廠商文字（✨速度最快、不塞車），或上傳對話截圖。</p>
+                <p className="text-xs text-slate-500 mb-4 font-bold text-indigo-600 bg-indigo-50 p-2 rounded-lg border border-indigo-100">
+                  💡 秘訣：直接貼上廠商文字（速度最快）！如果貼了文字，就【不用】上傳截圖囉！
+                </p>
                 
                 {/* 文字貼上區 */}
                 <div className="mb-4">
@@ -617,15 +628,15 @@ export default function App() {
                   disabled={(!chatImage && !pasteText.trim()) || isAnalyzing}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
                     (!chatImage && !pasteText.trim()) ? 'bg-slate-100 text-slate-400 cursor-not-allowed' :
-                    isAnalyzing ? 'bg-indigo-100 text-indigo-500 cursor-wait' :
+                    isAnalyzing ? (retryCount > 0 ? 'bg-orange-100 text-orange-600 cursor-wait shadow-inner border border-orange-200' : 'bg-indigo-100 text-indigo-500 cursor-wait') :
                     'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg active:scale-95'
                   }`}
                 >
                   {isAnalyzing ? (
                     retryCount > 0 ? (
-                      <><RefreshCw className="w-4 h-4 animate-spin" /> 伺服器塞車，自動闖關中 ({retryCount}/8)...</>
+                      <><Timer className="w-4 h-4 animate-spin" /> 塞車排隊中 ({retryCount}/5)... 剩 {retryCountdown} 秒</>
                     ) : (
-                      <><RefreshCw className="w-4 h-4 animate-spin" /> 分析中...</>
+                      <><RefreshCw className="w-4 h-4 animate-spin" /> 疾速分析中...</>
                     )
                   ) : (
                     <>🚀 開始 AI 分析</>
