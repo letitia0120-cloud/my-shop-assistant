@@ -4,8 +4,8 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
 
-// API Retry Utility - v3.6 升級：透明排隊倒數機制，不再讓畫面假死
-const fetchWithRetry = async (url, options, retries = 5, onRetry, onCountdown) => {
+// API Retry Utility - v3.7 升級：移除焦慮秒數，保留背景排隊機制
+const fetchWithRetry = async (url, options, retries = 5, onRetry) => {
   // 稍微縮短排隊等待時間，避免等太久讓使用者覺得卡住
   const delays = [2000, 4000, 8000, 10000, 15000];
   
@@ -41,16 +41,11 @@ const fetchWithRetry = async (url, options, retries = 5, onRetry, onCountdown) =
         }
       }
       
-      // 通知畫面正在進行第幾次重試
+      // 通知畫面正在進行第幾次重試 (但不回傳秒數)
       if (onRetry) onRetry(i + 1);
       
-      // 倒數計時等待迴圈 (每秒更新一次畫面)
-      const waitSeconds = Math.ceil(waitTime / 1000);
-      for (let s = waitSeconds; s > 0; s--) {
-        if (onCountdown) onCountdown(s);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      if (onCountdown) onCountdown(0);
+      // 靜靜地在背景等待，不顯示秒數干擾心情
+      await new Promise(r => setTimeout(r, waitTime));
     }
   }
 };
@@ -115,7 +110,6 @@ export default function App() {
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
   
   const [retryCount, setRetryCount] = useState(0); 
-  const [retryCountdown, setRetryCountdown] = useState(0); // 顯示等待秒數
   
   const [formData, setFormData] = useState({
     productName: '',
@@ -250,7 +244,6 @@ export default function App() {
     setAnalyzeError(null);
     setAnalyzeSuccess(false);
     setRetryCount(0); 
-    setRetryCountdown(0);
 
     try {
       const customModel = localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash';
@@ -314,8 +307,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       }, 5, 
-      (attempt) => { setRetryCount(attempt); },
-      (seconds) => { setRetryCountdown(seconds); }
+      (attempt) => { setRetryCount(attempt); } // 只傳回次數，不傳回秒數
       );
 
       const extractedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -341,7 +333,6 @@ export default function App() {
     } finally {
       setIsAnalyzing(false);
       setRetryCount(0); 
-      setRetryCountdown(0);
     }
   };
 
@@ -494,7 +485,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.6 透明排隊優化版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.7 舒心盲等版)</h1>
           </div>
           
           <div className="flex items-center gap-3 mt-3 sm:mt-0">
@@ -628,13 +619,13 @@ export default function App() {
                   disabled={(!chatImage && !pasteText.trim()) || isAnalyzing}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
                     (!chatImage && !pasteText.trim()) ? 'bg-slate-100 text-slate-400 cursor-not-allowed' :
-                    isAnalyzing ? (retryCount > 0 ? 'bg-orange-100 text-orange-600 cursor-wait shadow-inner border border-orange-200' : 'bg-indigo-100 text-indigo-500 cursor-wait') :
+                    isAnalyzing ? (retryCount > 0 ? 'bg-indigo-100 text-indigo-600 cursor-wait shadow-inner border border-indigo-200' : 'bg-indigo-100 text-indigo-500 cursor-wait') :
                     'bg-indigo-600 text-white hover:bg-indigo-700 shadow-md hover:shadow-lg active:scale-95'
                   }`}
                 >
                   {isAnalyzing ? (
                     retryCount > 0 ? (
-                      <><Timer className="w-4 h-4 animate-spin" /> 塞車排隊中 ({retryCount}/5)... 剩 {retryCountdown} 秒</>
+                      <><RefreshCw className="w-4 h-4 animate-spin" /> AI 正在努力擠進伺服器 ({retryCount}/5)...</>
                     ) : (
                       <><RefreshCw className="w-4 h-4 animate-spin" /> 疾速分析中...</>
                     )
