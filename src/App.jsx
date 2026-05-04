@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut, Timer, Type } from 'lucide-react';
+import { Upload, Image as ImageIcon, MessageSquare, Database, PlusCircle, Save, Trash2, RefreshCw, CheckCircle, AlertCircle, Home, Cloud, Search, Download, Settings, LogIn, LogOut, Timer, Type, Calculator, Store, Edit } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
@@ -100,7 +100,7 @@ const compressImage = (dataUrl, callback) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('upload'); 
   
-  const [pasteText, setPasteText] = useState(''); // 純文字輸入狀態
+  const [pasteText, setPasteText] = useState(''); 
   const [chatImage, setChatImage] = useState(null);
   const [chatMimeType, setChatMimeType] = useState(null);
   const [productImage, setProductImage] = useState(null);
@@ -110,6 +110,7 @@ export default function App() {
   const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
   
   const [retryCount, setRetryCount] = useState(0); 
+  const [editingId, setEditingId] = useState(null); // 新增：紀錄正在編輯的商品 ID
   
   const [formData, setFormData] = useState({
     productName: '',
@@ -122,6 +123,29 @@ export default function App() {
     variants: [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }] 
   });
 
+  // --- 快速試算狀態 ---
+  const [calcState, setCalcState] = useState({
+    costCny: '',
+    exchangeRate: 4.9,
+    limitCny: '',
+    limitOverseasCny: '',
+    sellMultiplier: 4.6
+  });
+
+  // --- 蝦皮毛利試算狀態 (移除預設手續費) ---
+  const [shopeeCalc, setShopeeCalc] = useState({
+    sellNtd: '',
+    costNtd: '',
+    feeRate: ''
+  });
+
+  // --- 新增：蝦皮反算狀態 ---
+  const [reverseCalc, setReverseCalc] = useState({
+    costNtd: '',
+    targetMargin: '',
+    feeRate: ''
+  });
+
   const [database, setDatabase] = useState([]);
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(null);
@@ -132,7 +156,7 @@ export default function App() {
   const [firebaseConfigInput, setFirebaseConfigInput] = useState(localStorage.getItem('custom_firebase_config') || '');
   const [modelInput, setModelInput] = useState(localStorage.getItem('custom_gemini_model') || 'gemini-2.5-flash');
 
-  // --- Firebase Auth Setup (Google Login) ---
+  // --- Firebase Auth Setup ---
   useEffect(() => {
     if (!auth) {
       setIsSyncing(false);
@@ -262,12 +286,10 @@ export default function App() {
 
       const parts = [{ text: prompt }];
 
-      // 如果有貼上文字，加入到 payload 中
       if (pasteText.trim()) {
         parts[0].text += `\n\n【廠商提供的文字內容如下】：\n${pasteText}`;
       }
 
-      // 如果有上傳截圖，加入到 payload 中
       if (chatImage && chatMimeType) {
         const base64Data = chatImage.split(',')[1];
         parts.push({ inlineData: { mimeType: chatMimeType, data: base64Data } });
@@ -307,7 +329,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       }, 5, 
-      (attempt) => { setRetryCount(attempt); } // 只傳回次數，不傳回秒數
+      (attempt) => { setRetryCount(attempt); } 
       );
 
       const extractedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -371,22 +393,24 @@ export default function App() {
       return;
     }
 
-    const newId = Date.now().toString();
+    const targetId = editingId || Date.now().toString(); // 編輯模式用舊ID，新增模式用新ID
+    const originalSavedAt = editingId ? database.find(item => item.id === editingId)?.savedAt : null;
+
     const newItem = {
       ...formData,
       productImage: productImage || null,
-      savedAt: new Date().toISOString()
+      savedAt: originalSavedAt || new Date().toISOString()
     };
 
     try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'products', newId);
+      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'products', targetId);
       await setDoc(docRef, newItem);
       
-      // 存檔成功後清空所有輸入框
       setChatImage(null);
-      setPasteText(''); // 清空貼上的文字
+      setPasteText(''); 
       setProductImage(null);
       setChatMimeType(null);
+      setEditingId(null); // 存檔後清除編輯狀態
       setFormData({
         productName: '',
         chatTime: '',
@@ -405,6 +429,44 @@ export default function App() {
       console.error("Save error:", error);
       setAnalyzeError(`儲存失敗: ${error.message}。請確認 Firestore 是否已設定為測試模式。`);
     }
+  };
+
+  // 新增：取消編輯功能
+  const cancelEdit = () => {
+    setEditingId(null);
+    setChatImage(null);
+    setPasteText(''); 
+    setProductImage(null);
+    setChatMimeType(null);
+    setFormData({
+      productName: '',
+      chatTime: '',
+      sizes: '',
+      cutoffTime: '',
+      exchangeRate: 4.9,
+      sellMultiplier: 4.6,
+      fullChatText: '',
+      variants: [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }]
+    });
+    setActiveTab('database');
+  };
+
+  // 新增：載入編輯資料功能
+  const handleEdit = (item) => {
+    setFormData({
+      productName: item.productName || '',
+      chatTime: item.chatTime || '',
+      sizes: item.sizes || '',
+      cutoffTime: item.cutoffTime || '',
+      exchangeRate: item.exchangeRate || 4.9,
+      sellMultiplier: item.sellMultiplier || 4.6,
+      fullChatText: item.fullChatText || '',
+      variants: item.variants && item.variants.length > 0 ? item.variants : [{ style: '', costCny: '', limitCny: '', limitOverseasCny: '' }]
+    });
+    setProductImage(item.productImage || null);
+    setEditingId(item.id);
+    setActiveTab('upload');
+    window.scrollTo({ top: 0, behavior: 'smooth' }); // 自動捲動到最上方
   };
 
   const deleteItem = async (id) => {
@@ -485,7 +547,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between">
           <div className="flex items-center gap-3">
             <Home className="w-6 h-6 text-yellow-300" />
-            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.7 舒心盲等版)</h1>
+            <h1 className="text-lg font-bold">雙兔幼幼園 (v3.8 專屬試算版)</h1>
           </div>
           
           <div className="flex items-center gap-3 mt-3 sm:mt-0">
@@ -510,30 +572,43 @@ export default function App() {
       </div>
 
       <div className="max-w-5xl mx-auto p-4 sm:p-6 mt-2">
-        <div className="flex space-x-1 bg-slate-200/50 p-1 rounded-xl mb-6">
+        <div className="flex space-x-1 bg-slate-200/50 p-1 rounded-xl mb-6 overflow-x-auto">
           <button
-            onClick={() => setActiveTab('upload')}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+            onClick={() => { setActiveTab('upload'); if(activeTab !== 'upload') setEditingId(null); }}
+            className={`flex-1 min-w-[90px] flex items-center justify-center gap-1 sm:gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
               activeTab === 'upload' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
             }`}
           >
             <PlusCircle className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span className="hidden sm:inline">新增上架 (AI 分析)</span>
-            <span className="sm:hidden">新增</span>
+            <span className="hidden sm:inline">{editingId ? '編輯商品' : '新增上架'}</span>
+            <span className="sm:hidden">{editingId ? '編輯' : '上架'}</span>
           </button>
+          
+          {/* 新增的快速試算分頁按鈕 */}
+          <button
+            onClick={() => setActiveTab('calculator')}
+            className={`flex-1 min-w-[90px] flex items-center justify-center gap-1 sm:gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
+              activeTab === 'calculator' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <Calculator className="w-4 h-4 sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">快速試算</span>
+            <span className="sm:hidden">試算</span>
+          </button>
+
           <button
             onClick={() => setActiveTab('database')}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+            className={`flex-1 min-w-[90px] flex items-center justify-center gap-1 sm:gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
               activeTab === 'database' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
             }`}
           >
             {isSyncing ? <RefreshCw className="w-4 h-4 sm:w-5 sm:h-5 animate-spin text-slate-400" /> : <Cloud className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-500" />}
-            <span className="hidden sm:inline">雲端商品庫 ({database.length})</span>
+            <span className="hidden sm:inline">商品庫 ({database.length})</span>
             <span className="sm:hidden">商品庫</span>
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all ${
+            className={`flex-1 min-w-[90px] flex items-center justify-center gap-1 sm:gap-2 py-3 px-2 sm:px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
               activeTab === 'settings' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200'
             }`}
           >
@@ -543,11 +618,306 @@ export default function App() {
           </button>
         </div>
 
+        {/* --- 新增的 快速試算 分頁內容 --- */}
+        {activeTab === 'calculator' && (
+          <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+            {/* 左側：人民幣批價與售價試算 */}
+            <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
+                <div className="bg-indigo-100 p-3 rounded-xl">
+                  <Calculator className="w-6 h-6 text-indigo-600" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-xl text-slate-700">利潤與售價快速試算</h2>
+                  <p className="text-xs text-slate-500 mt-1">無需建檔，快速換算廠商報價，精準掌握利潤。</p>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-600 mb-2">成本匯率</label>
+                    <input 
+                      type="number" step="0.01" 
+                      value={calcState.exchangeRate} 
+                      onChange={(e) => setCalcState({...calcState, exchangeRate: parseFloat(e.target.value) || 0})}
+                      className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none bg-blue-50 font-bold text-blue-700 text-lg transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-600 mb-2">限價乘數 (賣價倍數)</label>
+                    <input 
+                      type="number" step="0.01" 
+                      value={calcState.sellMultiplier} 
+                      onChange={(e) => setCalcState({...calcState, sellMultiplier: parseFloat(e.target.value) || 0})}
+                      className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none bg-indigo-50 font-bold text-indigo-700 text-lg transition-all"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-bold text-slate-600 mb-2">廠商拿貨價 (¥)</label>
+                      <input 
+                        type="number" 
+                        value={calcState.costCny} 
+                        onChange={(e) => setCalcState({...calcState, costCny: e.target.value})}
+                        className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-lg transition-all shadow-sm"
+                        placeholder="請輸入成本..."
+                      />
+                    </div>
+                    <div className="bg-blue-100/50 p-4 rounded-xl border border-blue-200">
+                      <span className="block text-xs font-bold text-blue-600 mb-1">實際台幣成本 (無條件進位)</span>
+                      <span className="text-3xl font-black text-blue-800">
+                        NT$ {calcState.costCny ? Math.ceil(parseFloat(calcState.costCny) * calcState.exchangeRate) : '0'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-bold text-slate-600 mb-2">國內限價 (¥)</label>
+                      <input 
+                        type="number" 
+                        value={calcState.limitCny} 
+                        onChange={(e) => setCalcState({...calcState, limitCny: e.target.value})}
+                        className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none text-lg transition-all shadow-sm"
+                        placeholder="國內限價..."
+                      />
+                    </div>
+                    <div className="bg-indigo-100/50 p-4 rounded-xl border border-indigo-200">
+                      <span className="block text-xs font-bold text-indigo-600 mb-1">國內台幣售價 (無條件進位)</span>
+                      <span className="text-3xl font-black text-indigo-800">
+                        NT$ {calcState.limitCny ? Math.ceil(parseFloat(calcState.limitCny) * calcState.sellMultiplier) : '0'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-bold text-slate-600 mb-2">海外限價 (¥)</label>
+                      <input 
+                        type="number" 
+                        value={calcState.limitOverseasCny} 
+                        onChange={(e) => setCalcState({...calcState, limitOverseasCny: e.target.value})}
+                        className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:ring-2 focus:ring-pink-500 outline-none text-lg transition-all shadow-sm"
+                        placeholder="海外限價..."
+                      />
+                    </div>
+                    <div className="bg-pink-100/50 p-4 rounded-xl border border-pink-200">
+                      <span className="block text-xs font-bold text-pink-600 mb-1">海外台幣售價 (無條件進位)</span>
+                      <span className="text-3xl font-black text-pink-800">
+                        NT$ {calcState.limitOverseasCny ? Math.ceil(parseFloat(calcState.limitOverseasCny) * calcState.sellMultiplier) : '0'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 顯示預估毛利 */}
+                {calcState.costCny && (calcState.limitCny || calcState.limitOverseasCny) && (
+                  <div className="bg-green-50 p-4 rounded-xl border border-green-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                    <span className="font-bold text-green-700">單件預估毛利</span>
+                    <div className="flex flex-col sm:flex-row gap-2 sm:gap-4">
+                      {calcState.limitCny && (
+                        <span className="text-xl font-black text-indigo-600">
+                          國內: + NT$ {Math.ceil(parseFloat(calcState.limitCny) * calcState.sellMultiplier) - Math.ceil(parseFloat(calcState.costCny) * calcState.exchangeRate)}
+                        </span>
+                      )}
+                      {calcState.limitOverseasCny && (
+                        <span className="text-xl font-black text-pink-600">
+                          海外: + NT$ {Math.ceil(parseFloat(calcState.limitOverseasCny) * calcState.sellMultiplier) - Math.ceil(parseFloat(calcState.costCny) * calcState.exchangeRate)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+                
+                <button 
+                  onClick={() => setCalcState({...calcState, costCny: '', limitCny: '', limitOverseasCny: ''})}
+                  className="w-full py-3 text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+                >
+                  清除數字，計算下一件
+                </button>
+              </div>
+            </div>
+
+            {/* 右側：蝦皮專屬毛利率試算 & 反算 */}
+            <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-sm border border-slate-100 flex flex-col gap-6">
+              <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+                <div className="bg-orange-100 p-3 rounded-xl">
+                  <Store className="w-6 h-6 text-orange-600" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-xl text-slate-700">蝦皮利潤 & 定價反算</h2>
+                  <p className="text-xs text-slate-500 mt-1">扣除萬惡手續費，精準定價絕不虧錢。</p>
+                </div>
+              </div>
+
+              {/* 模式一：算利潤 */}
+              <div className="space-y-4">
+                <div className="inline-block px-3 py-1 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg mb-1">模式一：已知售價 ➜ 算利潤</div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-1">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">售價 (NT$)</label>
+                    <input 
+                      type="number" 
+                      value={shopeeCalc.sellNtd} 
+                      onChange={(e) => setShopeeCalc({...shopeeCalc, sellNtd: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none text-sm transition-all shadow-sm"
+                      placeholder="賣多少"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">成本 (NT$)</label>
+                    <input 
+                      type="number" 
+                      value={shopeeCalc.costNtd} 
+                      onChange={(e) => setShopeeCalc({...shopeeCalc, costNtd: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none text-sm transition-all shadow-sm"
+                      placeholder="成本"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">手續費率 (%)</label>
+                    <input 
+                      type="number" step="0.1" 
+                      value={shopeeCalc.feeRate} 
+                      onChange={(e) => setShopeeCalc({...shopeeCalc, feeRate: e.target.value})}
+                      className="w-full px-2 py-2 border border-orange-200 rounded-xl focus:ring-2 focus:ring-orange-500 outline-none bg-orange-50 font-bold text-orange-700 text-sm transition-all text-center"
+                      placeholder="不預設"
+                    />
+                  </div>
+                </div>
+
+                {(() => {
+                  const sell = parseFloat(shopeeCalc.sellNtd) || 0;
+                  const cost = parseFloat(shopeeCalc.costNtd) || 0;
+                  const feeRate = parseFloat(shopeeCalc.feeRate) || 0;
+                  const fee = Math.round(sell * (feeRate / 100));
+                  const netProfit = sell - cost - fee;
+                  const margin = sell > 0 ? ((netProfit / sell) * 100).toFixed(1) : 0;
+                  
+                  return (
+                    <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 space-y-3">
+                      <div className="flex justify-between items-center pb-2 border-b border-slate-200">
+                        <span className="text-slate-600 text-sm font-semibold flex items-center gap-1">實賺淨利潤</span>
+                        <span className={`text-xl font-black ${netProfit > 0 ? 'text-green-600' : 'text-slate-400'}`}>
+                          {netProfit > 0 ? '+' : ''} NT$ {sell > 0 ? netProfit : '0'}
+                        </span>
+                      </div>
+                      
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-600 text-sm font-bold">真實毛利率</span>
+                        <div className="text-right">
+                          <span className={`text-2xl font-black ${margin >= 20 ? 'text-orange-600' : (margin > 0 ? 'text-amber-500' : 'text-slate-400')}`}>
+                            {sell > 0 ? `${margin}%` : '0%'}
+                          </span>
+                          {sell > 0 && <span className="block text-[10px] text-slate-400 mt-1">含手續費: NT${fee}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+
+              <div className="border-t border-slate-100 my-1"></div>
+
+              {/* 模式二：反算售價 */}
+              <div className="space-y-4">
+                <div className="inline-block px-3 py-1 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg mb-1">模式二：定下毛利 ➜ 反算售價</div>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="col-span-1">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">成本 (NT$)</label>
+                    <input 
+                      type="number" 
+                      value={reverseCalc.costNtd} 
+                      onChange={(e) => setReverseCalc({...reverseCalc, costNtd: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all shadow-sm"
+                      placeholder="成本"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">目標毛利 (%)</label>
+                    <input 
+                      type="number" step="0.1" 
+                      value={reverseCalc.targetMargin} 
+                      onChange={(e) => setReverseCalc({...reverseCalc, targetMargin: e.target.value})}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm transition-all shadow-sm"
+                      placeholder="想賺幾%"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">手續費率 (%)</label>
+                    <input 
+                      type="number" step="0.1" 
+                      value={reverseCalc.feeRate} 
+                      onChange={(e) => setReverseCalc({...reverseCalc, feeRate: e.target.value})}
+                      className="w-full px-2 py-2 border border-blue-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none bg-blue-50 font-bold text-blue-700 text-sm transition-all text-center"
+                      placeholder="不預設"
+                    />
+                  </div>
+                </div>
+
+                {(() => {
+                  const cost = parseFloat(reverseCalc.costNtd) || 0;
+                  const targetMargin = (parseFloat(reverseCalc.targetMargin) || 0) / 100;
+                  const feeRate = (parseFloat(reverseCalc.feeRate) || 0) / 100;
+                  
+                  let targetPrice = 0;
+                  let fee = 0;
+                  let netProfit = 0;
+
+                  // 預防輸入毛利加手續費超過 100% 的不合理狀況
+                  const denominator = 1 - targetMargin - feeRate;
+
+                  if (cost > 0 && denominator > 0) {
+                    targetPrice = Math.ceil(cost / denominator);
+                    fee = Math.round(targetPrice * feeRate);
+                    netProfit = targetPrice - cost - fee;
+                  }
+
+                  return (
+                    <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 space-y-3 relative overflow-hidden">
+                      {cost > 0 && denominator <= 0 && (
+                        <div className="absolute inset-0 bg-red-100/90 flex flex-col items-center justify-center p-2 text-center backdrop-blur-sm z-10">
+                          <span className="font-bold text-red-600 text-sm">目標不合理！</span>
+                          <span className="text-xs text-red-500">毛利加上手續費不能等於或超過 100% 喔</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between items-center pb-2 border-b border-blue-100">
+                        <span className="text-slate-600 text-sm font-semibold">蝦皮建議定價</span>
+                        <span className={`text-2xl font-black ${targetPrice > 0 ? 'text-blue-700' : 'text-slate-400'}`}>
+                          {targetPrice > 0 ? `NT$ ${targetPrice}` : '-'}
+                        </span>
+                      </div>
+                      
+                      <div className="flex justify-between items-center text-[11px] text-slate-500">
+                        <span>預估抽成: NT$ {fee}</span>
+                        <span className="font-bold text-green-600">預估淨利: + NT$ {netProfit}</span>
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+              
+              <button 
+                onClick={() => {
+                  setShopeeCalc({sellNtd: '', costNtd: '', feeRate: ''});
+                  setReverseCalc({costNtd: '', targetMargin: '', feeRate: ''});
+                }}
+                className="w-full py-3 mt-2 text-sm font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+              >
+                清除所有數字，算下一件
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* --- 原有的 Upload 分頁 --- */}
         {activeTab === 'upload' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            
             <div className="space-y-6">
-              {/* --- 步驟一 區塊 (文字貼上 + 截圖上傳) --- */}
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
                 <div className="flex items-center gap-2 mb-3">
                   <Type className="w-5 h-5 text-indigo-500" />
@@ -557,7 +927,6 @@ export default function App() {
                   💡 秘訣：直接貼上廠商文字（速度最快）！如果貼了文字，就【不用】上傳截圖囉！
                 </p>
                 
-                {/* 文字貼上區 */}
                 <div className="mb-4">
                   <label className="block text-xs font-bold text-indigo-600 mb-1 flex items-center gap-1">
                     ⚡ 快速貼上文字分析區
@@ -576,7 +945,6 @@ export default function App() {
                   <div className="flex-grow border-t border-slate-100"></div>
                 </div>
 
-                {/* 圖片上傳區 */}
                 <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-indigo-100 border-dashed rounded-xl cursor-pointer hover:bg-indigo-50 transition-colors relative overflow-hidden mt-2">
                   {chatImage ? (
                     <img src={chatImage} alt="Chat preview" className="absolute inset-0 w-full h-full object-contain bg-black/5" />
@@ -770,17 +1138,28 @@ export default function App() {
                 </div>
               </div>
 
-              <button 
-                onClick={saveToDatabase}
-                className="w-full mt-6 py-4 bg-slate-900 text-white rounded-xl font-bold text-lg hover:bg-slate-800 shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-[0.98]"
-              >
-                <Save className="w-5 h-5" />
-                儲存至後台，完成今日進度！
-              </button>
+              <div className="flex gap-3 mt-6">
+                {editingId && (
+                  <button 
+                    onClick={cancelEdit}
+                    className="w-1/3 py-4 bg-slate-200 text-slate-600 rounded-xl font-bold text-lg hover:bg-slate-300 transition-colors"
+                  >
+                    取消編輯
+                  </button>
+                )}
+                <button 
+                  onClick={saveToDatabase}
+                  className={`${editingId ? 'w-2/3 bg-indigo-600 hover:bg-indigo-700' : 'w-full bg-slate-900 hover:bg-slate-800'} text-white rounded-xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-transform active:scale-[0.98]`}
+                >
+                  <Save className="w-5 h-5" />
+                  {editingId ? '更新並返回商品庫' : '儲存至後台，完成今日進度！'}
+                </button>
+              </div>
             </div>
           </div>
         )}
 
+        {/* --- 原有的 Database 分頁 --- */}
         {activeTab === 'database' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
             <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-50/50">
@@ -899,13 +1278,22 @@ export default function App() {
                           </div>
                         </td>
                         <td className="p-4 align-top text-center">
-                          <button 
-                            onClick={() => deleteItem(item.id)}
-                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors mt-1"
-                            title="刪除"
-                          >
-                            <Trash2 className="w-5 h-5" />
-                          </button>
+                          <div className="flex flex-col items-center gap-2 mt-1">
+                            <button 
+                              onClick={() => handleEdit(item)}
+                              className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                              title="編輯這件商品"
+                            >
+                              <Edit className="w-5 h-5" />
+                            </button>
+                            <button 
+                              onClick={() => deleteItem(item.id)}
+                              className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                              title="刪除"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -916,6 +1304,7 @@ export default function App() {
           </div>
         )}
 
+        {/* --- 原有的 Settings 分頁 --- */}
         {activeTab === 'settings' && (
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden max-w-2xl mx-auto">
             <div className="p-5 border-b border-slate-100 bg-slate-50/50">
@@ -933,9 +1322,6 @@ export default function App() {
                   className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
                   placeholder="AIzaSy..."
                 />
-                <p className="text-xs text-slate-500 mt-2">
-                  前往 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline font-semibold">Google AI Studio</a> 建立免費的 API Key 並貼在這裡。
-                </p>
               </div>
 
               <hr className="border-slate-100" />
@@ -948,41 +1334,31 @@ export default function App() {
                   className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-xs h-40"
                   placeholder={`{\n  "apiKey": "...",\n  "authDomain": "...",\n  "projectId": "...",\n  "storageBucket": "...",\n  "messagingSenderId": "...",\n  "appId": "..."\n}`}
                 />
-                <div className="text-xs text-slate-500 mt-2 space-y-1">
-                <p>前往 <a href="https://console.firebase.google.com/" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline font-semibold">Firebase</a> 建立專案與 Web 應用程式。</p>
-                <p className="text-red-500 font-semibold">⚠️ 必做事項：</p>
-                <ul className="list-disc pl-5">
-                  <li>複製系統提供的那段 JSON 設定碼貼在這裡 (只要大括號的部分)。</li>
-                  <li>在 Firebase 後台的 Authentication (驗證) 中，開啟 <strong>Google 登入</strong>。</li>
-                  <li>在 Firestore Database 中建立資料庫，並選擇 <strong>以測試模式開始 (Test Mode)</strong>。</li>
-                  <li className="font-bold text-indigo-600">在 Authentication 的「設定 ➜ 授權網域」中，新增你的 Vercel 網址。</li>
-                </ul>
               </div>
+
+              <hr className="border-slate-100" />
+
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">3. AI 模型版本 (進階設定)</label>
+                <input 
+                  type="text" 
+                  value={modelInput} 
+                  onChange={(e) => setModelInput(e.target.value)}
+                  className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
+                  placeholder="gemini-2.5-flash"
+                />
+              </div>
+
+              <button 
+                onClick={saveSettings}
+                className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-md hover:bg-indigo-700 shadow-md transition-colors"
+              >
+                儲存設定並重啟系統
+              </button>
             </div>
-
-            <hr className="border-slate-100" />
-
-            <div>
-              <label className="block text-sm font-bold text-slate-700 mb-2">3. AI 模型版本 (進階設定)</label>
-              <input 
-                type="text" 
-                value={modelInput} 
-                onChange={(e) => setModelInput(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
-                placeholder="gemini-2.5-flash"
-              />
-            </div>
-
-            <button 
-              onClick={saveSettings}
-              className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold text-md hover:bg-indigo-700 shadow-md transition-colors"
-            >
-              儲存設定並重啟系統
-            </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
-  </div>
-);
+  );
 }
